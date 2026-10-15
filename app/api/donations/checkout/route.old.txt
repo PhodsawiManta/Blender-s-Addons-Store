@@ -1,0 +1,146 @@
+import { NextResponse } from "next/server";
+import Stripe from "stripe";
+import { getCurrentProfile } from "@/lib/auth";
+import {
+  hasTrustedRequestOrigin,
+  readJsonBody
+} from "@/lib/auth-http";
+import { donationCheckoutSchema } from "@/lib/donation-validation";
+import { env, getCanonicalSiteUrl, hasStripe } from "@/lib/env";
+import { createSupabaseAdminClient } from "@/lib/supabase/admin";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+function jsonError(message: string, status: number) {
+  return NextResponse.json(
+    { error: message },
+    { status, headers: { "Cache-Control": "private, no-store" } }
+  );
+}
+
+export async function POST(request: Request) {
+  if (!hasTrustedRequestOrigin(request)) {
+    return jsonError("Untrusted request origin.", 403);
+  }
+  if (!env.paidCheckoutEnabled) {
+    return jsonError("Stripe payments are not enabled yet.", 503);
+  }
+  if (!hasStripe || !env.stripeSecretKey) {
+    return jsonError("Stripe and its signed webhook are not fully configured.", 503);
+  }
+
+  const parsed = donationCheckoutSchema.safeParse(await readJsonBody(request));
+  if (!parsed.success) {
+    return jsonError("Enter a valid donation of at least USD 3.", 400);
+  }
+
+  const supabase = createSupabaseAdminClient();
+  if (!supabase) return jsonError("Donation storage is not configured.", 503);
+
+  const { data: product, error: productError } = await supabase
+    .from("products")
+    .select("id,title,slug,type,status,is_free")
+    .eq("id", parsed.data.productId)
+    .maybeSingle();
+  if (productError) return jsonError("Could not verify this add-on.", 500);
+  if (
+    !product
+    || product.type !== "ADDON"
+    || product.status !== "PUBLISHED"
+    || product.is_free !== true
+  ) {
+    return jsonError("Donations are available only for published free add-ons.", 409);
+  }
+
+  const profile = await getCurrentProfile();
+  const donationId = crypto.randomUUID();
+  const donationInsert = await supabase.from("donations").insert({
+    id: donationId,
+    product_id: product.id,
+    user_id: profile?.id ?? null,
+    customer_email: profile?.email ?? null,
+    usd_amount_cents: parsed.data.usdAmountCents,
+    currency: "USD",
+    status: "pending"
+  });
+  if (donationInsert.error) {
+    console.error("Donation insert failed.", {
+      code: donationInsert.error.code,
+      message: donationInsert.error.message
+    });
+    if (
+      donationInsert.error.code === "PGRST205"
+      || donationInsert.error.code === "42P01"
+    ) {
+      return jsonError(
+        "Donation database migration is not installed. Apply migration 202607260004_addon_donations.sql.",
+        503
+      );
+    }
+    return jsonError("Could not create the donation.", 500);
+  }
+
+  try {
+    const stripe = new Stripe(env.stripeSecretKey);
+    const siteUrl = getCanonicalSiteUrl();
+    if (!siteUrl) throw new Error("The canonical site URL is invalid.");
+
+    const metadata = {
+      kind: "donation",
+      donation_id: donationId,
+      product_id: product.id,
+      ...(profile ? { user_id: profile.id } : {})
+    };
+    const session = await stripe.checkout.sessions.create({
+      mode: "payment",
+      adaptive_pricing: {
+        enabled: true,
+      },
+      submit_type: "donate",
+      ...(profile ? { customer_email: profile.email } : {}),
+      line_items: [{
+        price_data: {
+          currency: "usd",
+          unit_amount: parsed.data.usdAmountCents,
+          product_data: {
+            name: `Support ${product.title}`,
+            description: "A voluntary donation to support this free Aoupa add-on.",
+            metadata: {
+              aoupa_product_id: product.id,
+              aoupa_donation_id: donationId
+            }
+          }
+        },
+        quantity: 1
+      }],
+      metadata,
+      payment_intent_data: { metadata },
+      success_url: `${siteUrl}/donate/success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${siteUrl}/product/${product.slug}?donation=cancelled`
+    }, {
+      idempotencyKey: `aoupa_donation_${donationId}`
+    });
+    if (!session.url) throw new Error("Stripe did not return a Checkout URL.");
+
+    const sessionUpdate = await supabase
+      .from("donations")
+      .update({
+        stripe_session_id: session.id,
+        updated_at: new Date().toISOString()
+      })
+      .eq("id", donationId);
+    if (sessionUpdate.error) throw sessionUpdate.error;
+
+    return NextResponse.json(
+      { url: session.url },
+      { headers: { "Cache-Control": "private, no-store" } }
+    );
+  } catch {
+    await supabase
+      .from("donations")
+      .update({ status: "failed", updated_at: new Date().toISOString() })
+      .eq("id", donationId);
+    return jsonError("Could not start Stripe Donation Checkout.", 502);
+  }
+}

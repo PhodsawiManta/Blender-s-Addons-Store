@@ -1,0 +1,2 @@
+-- Intentionally empty. Create production add-ons through the authenticated
+-- admin dashboard so their files and version records stay consistent.

@@ -1,0 +1,75 @@
+node_modules
+data/videos/
+.next
+.open-next
+dist
+out
+.env
+.env.local
+.env.*.local
+.npm-cache
+.site-git
+.agents
+.wrangler
+.wrangler-state
+coverage
+playwright-report
+test-results
+*.log
+*.tsbuildinfo
+*-sites-*.tar.gz
+.DS_Store
+Thumbs.db
+# Dependencies
+node_modules/
+
+# Build output
+.next/
+out/
+dist/
+build/
+
+# Cache
+.npm-cache/
+.open-next/
+.turbo/
+.cache/
+*.tsbuildinfo
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# OS and editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Temporary files
+.tmp/
+temp/
+tmp/
+
+# Test output and coverage
+coverage/
+playwright-report/
+test-results/
+
+# Local deployment artifacts
+.open-next/
+.wrangler/
+
+# Backup archives
+*.tar
+*.tar.gz
+*.zip
+*.bak
+*.old

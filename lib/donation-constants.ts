@@ -1,0 +1,2 @@
+export const MIN_DONATION_USD_CENTS = 300;
+export const MAX_DONATION_USD_CENTS = 100_000_000;
